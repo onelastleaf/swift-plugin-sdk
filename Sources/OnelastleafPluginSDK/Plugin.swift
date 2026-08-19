@@ -211,6 +211,11 @@ private actor PluginSession {
         "HostHello must be the first host message"
       )
     }
+    guard !envelope.sessionID.isEmpty, !envelope.pluginInstanceID.isEmpty else {
+      throw PluginSDKError.protocolViolation(
+        "HostHello envelope omitted its session or instance identity"
+      )
+    }
     try validateHostHello(hello)
     guard trace.callDepth <= hello.maximumCallDepth,
       trace.causalDepth <= hello.maximumCausalDepth
@@ -219,8 +224,8 @@ private actor PluginSession {
         "HostHello exceeds a negotiated trace depth limit"
       )
     }
-    sessionID = hello.sessionID
-    instanceID = hello.pluginInstanceID
+    sessionID = envelope.sessionID
+    instanceID = envelope.pluginInstanceID
     maximumCallDepth = hello.maximumCallDepth
     maximumCausalDepth = hello.maximumCausalDepth
     await sender.configure(sessionID: sessionID, instanceID: instanceID)
@@ -428,8 +433,6 @@ private actor PluginSession {
 
   private func validateHostHello(_ hello: Oll_Protocol_HostHello) throws {
     guard hello.hasNode,
-      !hello.sessionID.isEmpty,
-      !hello.pluginInstanceID.isEmpty,
       hello.protocolSchemaSha256 == schemaFingerprint(),
       hello.hasPluginID,
       hello.pluginID.value == pluginID,
