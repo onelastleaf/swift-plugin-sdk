@@ -13,7 +13,6 @@ actions.
 
 - Swift 6.1 or newer
 - macOS 15 or newer when building for macOS
-- An `oll` build with the same plugin protocol fingerprint as this SDK release
 
 The SDK and generated projects fetch dependencies from their authoritative
 remote repositories. You do not need a local checkout of the SDK to build a
@@ -133,7 +132,6 @@ format_version = 1
 [plugin]
 id = "com.example.my-plugin"
 name = "my-plugin"
-protocol_fingerprint = "9b236b37455965858413f5717a88e28568a459e81e87a28ff77be8845bcff75a"
 
 [source]
 checkout = "source"
@@ -150,9 +148,12 @@ steps = [
 argv = ["{install}/my-plugin"]
 ```
 
-The fingerprint is part of the protocol contract. Use the value shipped by the
-matching SDK release; do not substitute an arbitrary hash or silently update
-only one side.
+This SDK follows the canonical protobuf wire contract. It never computes,
+embeds, publishes, or compares a schema hash or fingerprint. Descriptor-wide
+hashes change for compatible additions and unrelated services, so they reject
+valid peers. Protocol changes instead preserve field numbers and wire types,
+give additions safe absent semantics, and tolerate unknown fields. Exact SDK
+pins provide reproducible builds; they are not protobuf API versioning.
 
 Publish the plugin project to a Git remote that contains `Package.swift`,
 `oll.toml`, and its sources. Install it from that remote, then start and call
@@ -229,8 +230,6 @@ import.
   when the action needs it.
 - Check cancellation in long loops or before expensive work. Cancelling one
   job must not stop unrelated jobs in the same process.
-- Keep the SDK version and oll protocol version aligned. A fingerprint mismatch
-  is an intentional hard failure.
 
 ## Troubleshooting
 
@@ -241,7 +240,3 @@ environment and stdin liveness pipe are created correctly.
 If installation cannot find the built executable, make sure the executable
 product name in `Package.swift`, the release binary path in `source.steps`, and
 the filename in `runtime.argv` are all the same.
-
-If the handshake reports a schema or fingerprint mismatch, use an SDK release
-that matches the running `oll` build. Changing only the string in `oll.toml`
-does not make incompatible protocol code compatible.

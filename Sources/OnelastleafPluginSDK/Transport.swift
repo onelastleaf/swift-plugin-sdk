@@ -182,14 +182,3 @@ private func isLoopbackLiteral(_ host: String) -> Bool {
   else { return false }
   return true
 }
-
-func schemaFingerprint() -> Data {
-  var bytes = Data()
-  var index = protocolSchemaSHA256.startIndex
-  while index < protocolSchemaSHA256.endIndex {
-    let next = protocolSchemaSHA256.index(index, offsetBy: 2)
-    bytes.append(UInt8(protocolSchemaSHA256[index..<next], radix: 16)!)
-    index = next
-  }
-  return bytes
-}

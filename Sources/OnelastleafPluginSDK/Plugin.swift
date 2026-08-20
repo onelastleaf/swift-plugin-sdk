@@ -241,7 +241,6 @@ private actor PluginSession {
     id.value = pluginID
     helloReply.pluginID = id
     helloReply.pluginName = hello.pluginName
-    helloReply.protocolSchemaSha256 = schemaFingerprint()
     helloReply.pluginVersion = version
     helloReply.actions = actions.sorted(by: { $0.key < $1.key }).map { name, action in
       var descriptor = Oll_Protocol_ActionDescriptor()
@@ -433,7 +432,6 @@ private actor PluginSession {
 
   private func validateHostHello(_ hello: Oll_Protocol_HostHello) throws {
     guard hello.hasNode,
-      hello.protocolSchemaSha256 == schemaFingerprint(),
       hello.hasPluginID,
       hello.pluginID.value == pluginID,
       hello.hasPluginName,
