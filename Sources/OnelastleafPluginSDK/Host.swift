@@ -36,21 +36,21 @@ final class ResponseWaiter: @unchecked Sendable {
 
 final class PendingResponses: @unchecked Sendable {
   private struct Entry: Sendable {
-    let correlationID: String
+    let trace: Oll_Protocol_TraceContext
     let waiter: ResponseWaiter
   }
 
   private var entries: [UInt64: Entry] = [:]
   private let lock = NSLock()
 
-  func add(messageID: UInt64, correlationID: String) throws -> ResponseWaiter {
+  func add(messageID: UInt64, trace: Oll_Protocol_TraceContext) throws -> ResponseWaiter {
     lock.lock()
     defer { lock.unlock() }
     guard entries[messageID] == nil else {
       throw PluginSDKError.protocolViolation("duplicate pending message ID")
     }
     let waiter = ResponseWaiter()
-    entries[messageID] = Entry(correlationID: correlationID, waiter: waiter)
+    entries[messageID] = Entry(trace: trace, waiter: waiter)
     return waiter
   }
 
@@ -67,11 +67,11 @@ final class PendingResponses: @unchecked Sendable {
         "response names no pending plugin request"
       )
     }
-    guard entry.correlationID == trace.correlationID else {
+    guard entry.trace == trace else {
       entry.waiter.fail(
-        PluginSDKError.protocolViolation("response correlation context differs")
+        PluginSDKError.protocolViolation("response trace context differs")
       )
-      throw PluginSDKError.protocolViolation("response correlation context differs")
+      throw PluginSDKError.protocolViolation("response trace context differs")
     }
     entry.waiter.succeed(payload)
   }
@@ -231,7 +231,7 @@ extension ActionContext {
         "artifact size or SHA-256 does not match its bytes"
       )
     }
-    let transferTrace = try nestedTrace()
+    let transferTrace = trace
 
     var start = Oll_Protocol_ArtifactTransferStart()
     var job = Oll_Protocol_PluginJobId()

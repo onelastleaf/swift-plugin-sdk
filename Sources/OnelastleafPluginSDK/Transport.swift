@@ -118,7 +118,7 @@ actor EnvelopeSender {
     let messageID = try reserveMessageID()
     let waiter = try pending.add(
       messageID: messageID,
-      correlationID: trace.correlationID
+      trace: trace
     )
     do {
       let delivery = try enqueue(
