@@ -11,10 +11,10 @@ struct Conformance {
       }
       try plugin.action(name: "wait", description: "Wait for cancellation") {
         context, _ in
-        while !(await context.cancellation.isCancelled) {
+        while !context.cancellation.isCancelled {
           try await Task.sleep(for: .milliseconds(1))
         }
-        try await context.cancellation.checkCancellation()
+        try context.cancellation.checkCancellation()
         return ActionResult()
       }
       try plugin.action(name: "host", description: "Exercise host capabilities") {

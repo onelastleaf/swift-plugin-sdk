@@ -1,6 +1,9 @@
 import Foundation
+import OnelastleafPluginProtocol
 import SwiftProtobuf
+import Synchronization
 
+/// The structured value and stored artifacts returned by an action.
 public struct ActionResult: Sendable {
   public var value: Oll_Protocol_ConfigValue?
   public var artifacts: [Oll_Protocol_ArtifactDescriptor]
@@ -47,38 +50,65 @@ public struct ActionResult: Sendable {
   }
 }
 
-public actor CancellationToken {
-  private var cancelled = false
+/// Cooperative cancellation state for one action invocation.
+public final class CancellationToken: Sendable {
+  private enum State: Sendable {
+    case active
+    case cancelled
+    case finished
+  }
 
-  public var isCancelled: Bool { cancelled || Task.isCancelled }
+  private let state = Mutex<State>(.active)
+
+  public var isCancelled: Bool {
+    state.withLock { $0 == .cancelled } || Task.isCancelled
+  }
 
   public func checkCancellation() throws {
-    if cancelled || Task.isCancelled {
-      throw CancellationError()
-    }
+    if isCancelled { throw CancellationError() }
+  }
+
+  func checkActive() throws {
+    let active = state.withLock { $0 == .active }
+    if !active || Task.isCancelled { throw CancellationError() }
   }
 
   func cancel() {
-    cancelled = true
+    state.withLock { state in
+      if state == .active { state = .cancelled }
+    }
+  }
+
+  func finish() {
+    state.withLock { state in
+      if state == .active { state = .finished }
+    }
   }
 }
 
+/// Per-invocation context. Its host operations preserve the job's trace and
+/// stop accepting output once the action settles or is cancelled.
 public struct ActionContext: Sendable {
   public let jobID: String
   public let deadline: Google_Protobuf_Timestamp?
-  public let trace: Oll_Protocol_TraceContext
   public let cancellation: CancellationToken
-  public let host: HostClient
+
+  let trace: Oll_Protocol_TraceContext
+  let host: HostClient
   let parentCallID: UInt64
+  let scope: JobScope
+
+  /// The largest artifact chunk accepted by this oll session.
+  public var maximumArtifactChunkBytes: UInt64 {
+    host.maximumArtifactChunkBytes
+  }
 
   func nestedTrace() throws -> Oll_Protocol_TraceContext {
     var child = trace
     child.parentCallID = parentCallID
     let (depth, overflow) = child.callDepth.addingReportingOverflow(1)
     guard !overflow, depth <= host.maximumCallDepth else {
-      throw PluginSDKError.protocolViolation(
-        "host call exceeds the negotiated call-depth limit"
-      )
+      throw PluginSDKError.callDepthExceeded(maximum: host.maximumCallDepth)
     }
     child.callDepth = depth
     return child

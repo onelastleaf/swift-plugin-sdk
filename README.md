@@ -5,20 +5,20 @@ in Swift with Swift concurrency and gRPC. The SwiftPM library product is
 `OnelastleafPluginSDK`.
 
 The SDK takes care of the protocol machinery—handshake, message ordering,
-concurrent jobs, cancellation, host calls, artifacts, heartbeats, graceful
-shutdown, and the 64 MiB message limit—so plugin code can stay focused on its
-actions.
+concurrent jobs, cancellation, host calls, artifacts, heartbeats, and graceful
+shutdown—so plugin code can stay focused on its actions.
 
 ## Requirements
 
-- Swift 6.1 or newer
+- Swift 6.2 or newer
 - macOS 15 or newer when building for macOS
 
 The SDK and generated projects fetch dependencies from their authoritative
 remote repositories. You do not need a local checkout of the SDK to build a
-plugin. The SDK package itself declares Swift tools 6.1, so resolving it needs a
-Swift 6.1 or newer toolchain even if a consuming package declares Swift tools
-6.0.
+plugin. The SDK package declares Swift tools 6.2 because its current
+SwiftProtobuf dependency requires that toolchain. A generated plugin may still
+declare Swift tools 6.0, but SwiftPM must itself run under Swift 6.2 or newer to
+resolve and build the complete dependency graph.
 
 ## Build and test the SDK
 
@@ -61,7 +61,7 @@ For an existing executable package, add the official repository and pin the
 release exactly:
 
 ```swift
-// swift-tools-version: 6.1
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
@@ -152,8 +152,10 @@ This SDK follows the canonical protobuf wire contract. It never computes,
 embeds, publishes, or compares a schema hash or fingerprint. Descriptor-wide
 hashes change for compatible additions and unrelated services, so they reject
 valid peers. Protocol changes instead preserve field numbers and wire types,
-give additions safe absent semantics, and tolerate unknown fields. Exact SDK
-pins provide reproducible builds; they are not protobuf API versioning.
+give additions safe absent semantics, and tolerate unknown fields. An exact SDK
+pin fixes the SDK sources; commit your plugin's `Package.resolved` as well when
+you need the complete transitive graph fixed. Neither is protobuf API
+versioning.
 
 Publish the plugin project to a Git remote that contains `Package.swift`,
 `oll.toml`, and its sources. Install it from that remote, then start and call
@@ -199,7 +201,7 @@ try plugin.action(name: "work", description: "Do cancellable work") {
   context, arguments in
 
   for argument in arguments {
-    try await context.cancellation.checkCancellation()
+    try context.cancellation.checkCancellation()
     // Process argument.
   }
 
@@ -216,6 +218,23 @@ try plugin.action(name: "work", description: "Do cancellable work") {
 - `log(level:target:message:fields:)` emits a structured, job-correlated log.
 - `storeArtifact(descriptor:chunks:)` transfers a verified job artifact.
 
+For a large artifact, use the streaming overload instead of collecting every
+chunk in an array first:
+
+```swift
+let stored = try await context.storeArtifact(
+  descriptor: descriptor,
+  chunkCount: expectedChunkCount,
+  chunks: chunkStream
+)
+```
+
+`chunkStream` can be any `Sendable` `AsyncSequence` of `Data`. Its count must
+match the declaration, every nonempty chunk must fit the limit advertised by
+oll, and the final size and SHA-256 must match the descriptor. Empty artifacts
+are valid with both size and chunk count set to zero. An action result may list
+only the exact descriptors oll already confirmed as stored for that job.
+
 The generated protocol types are re-exported by `OnelastleafPluginSDK`, so the
 request and response types used by these APIs are available from the same
 import.
@@ -223,6 +242,8 @@ import.
 ## A few runtime rules worth knowing
 
 - Let `Plugin.run()` own the connection for the lifetime of the process.
+- Register all actions before calling `run()`, and run each `Plugin` instance
+  only once.
 - Do not read application input from stdin; oll reserves it for parent
   liveness.
 - Do not open a plugin gRPC server. The SDK connects to the oll-owned endpoint.
@@ -230,6 +251,15 @@ import.
   when the action needs it.
 - Check cancellation in long loops or before expensive work. Cancelling one
   job must not stop unrelated jobs in the same process.
+- Structured result and log values must be finite, stay inside the protobuf
+  timestamp and duration domains and the 33-level nesting limit, and must not
+  contain session-scoped function handles. The SDK checks these rules before
+  sending them.
+
+The plugin protocol has no encoded-envelope size cap. This SDK sets
+grpc-swift's send and receive limits to `Int.max`, avoiding its smaller default.
+Artifacts still use oll's advertised chunk limit and should go through
+`storeArtifact` rather than being packed into one large envelope.
 
 ## Troubleshooting
 

@@ -1,56 +1,25 @@
 import Foundation
+import OnelastleafPluginProtocol
+import Synchronization
 
-private final class DeliveryWaiter: @unchecked Sendable {
-  let stream: AsyncThrowingStream<Void, Error>
-  private let continuation: AsyncThrowingStream<Void, Error>.Continuation
+private let outboundEnvelopeCapacity = 256
 
-  init() {
-    var captured: AsyncThrowingStream<Void, Error>.Continuation?
-    stream = AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) {
-      captured = $0
-    }
-    continuation = captured!
+/// A bounded multi-producer, single-consumer queue for the gRPC request stream.
+/// `AsyncStream.Continuation` is thread-safe; `EnvelopeSender` supplies ordering.
+final class EnvelopeQueue: Sendable {
+  let stream: AsyncStream<Oll_Protocol_PluginEnvelope>
+  private let continuation: AsyncStream<Oll_Protocol_PluginEnvelope>.Continuation
+
+  init(capacity: Int = outboundEnvelopeCapacity) {
+    (stream, continuation) = AsyncStream.makeStream(
+      bufferingPolicy: .bufferingOldest(capacity)
+    )
   }
 
-  func succeed() {
-    continuation.yield(())
-    continuation.finish()
-  }
-
-  func fail(_ error: Error) {
-    continuation.finish(throwing: error)
-  }
-
-  func value() async throws {
-    var iterator = stream.makeAsyncIterator()
-    guard try await iterator.next() != nil else {
-      throw PluginSDKError.transport("plugin output closed before delivery")
-    }
-  }
-}
-
-struct OutboundEnvelope: Sendable {
-  let envelope: Oll_Protocol_PluginEnvelope
-  fileprivate let delivery: DeliveryWaiter
-}
-
-final class EnvelopeQueue: @unchecked Sendable {
-  let stream: AsyncStream<OutboundEnvelope>
-  private let continuation: AsyncStream<OutboundEnvelope>.Continuation
-
-  init(capacity: Int = 256) {
-    var captured: AsyncStream<OutboundEnvelope>.Continuation?
-    stream = AsyncStream(bufferingPolicy: .bufferingOldest(capacity)) {
-      captured = $0
-    }
-    continuation = captured!
-  }
-
-  fileprivate func send(_ envelope: Oll_Protocol_PluginEnvelope) throws -> DeliveryWaiter {
-    let delivery = DeliveryWaiter()
-    switch continuation.yield(OutboundEnvelope(envelope: envelope, delivery: delivery)) {
+  func send(_ envelope: Oll_Protocol_PluginEnvelope) throws {
+    switch continuation.yield(envelope) {
     case .enqueued:
-      return delivery
+      return
     case .dropped:
       throw PluginSDKError.transport("plugin output queue is full")
     case .terminated:
@@ -63,38 +32,37 @@ final class EnvelopeQueue: @unchecked Sendable {
   func finish() {
     continuation.finish()
   }
-
-  func delivered(_ outbound: OutboundEnvelope) {
-    outbound.delivery.succeed()
-  }
-
-  func failed(_ outbound: OutboundEnvelope, error: Error) {
-    outbound.delivery.fail(error)
-  }
 }
 
-actor EnvelopeSender {
+/// Owns the plugin's message-ID sequence and is the only envelope construction
+/// path. Envelope construction and queue admission share one short synchronous
+/// critical section, so protocol ordering never crosses an actor reentrancy
+/// point. The gRPC writer reports later transport failures through the runtime.
+final class EnvelopeSender: Sendable {
+  private struct State: Sendable {
+    var sessionID: String?
+    var instanceID: String?
+    var nextMessageID: UInt64? = 1
+  }
+
   private let queue: EnvelopeQueue
-  private var sessionID = ""
-  private var instanceID = ""
-  private var nextMessageID: UInt64 = 1
+  private let state = Mutex(State())
 
   init(queue: EnvelopeQueue) {
     self.queue = queue
   }
 
-  func configure(sessionID: String, instanceID: String) {
-    self.sessionID = sessionID
-    self.instanceID = instanceID
-  }
-
-  private func reserveMessageID() throws -> UInt64 {
-    guard nextMessageID < UInt64.max else {
-      throw PluginSDKError.protocolViolation("plugin exhausted message IDs")
+  func configure(sessionID: String, instanceID: String) throws {
+    guard !sessionID.isEmpty, !instanceID.isEmpty else {
+      throw PluginSDKError.protocolViolation("plugin sender identity must not be empty")
     }
-    let value = nextMessageID
-    nextMessageID += 1
-    return value
+    try state.withLock { state in
+      guard state.sessionID == nil, state.instanceID == nil else {
+        throw PluginSDKError.protocolViolation("plugin sender was configured more than once")
+      }
+      state.sessionID = sessionID
+      state.instanceID = instanceID
+    }
   }
 
   @discardableResult
@@ -102,41 +70,77 @@ actor EnvelopeSender {
     replyTo: UInt64? = nil,
     trace: Oll_Protocol_TraceContext,
     payload: Oll_Protocol_PluginEnvelope.OneOf_Payload
-  ) async throws -> UInt64 {
-    let messageID = try reserveMessageID()
-    let delivery = try enqueue(
-      messageID: messageID, replyTo: replyTo, trace: trace, payload: payload)
-    try await delivery.value()
-    return messageID
+  ) throws -> UInt64 {
+    try state.withLock { state in
+      let messageID = try availableMessageID(state: state)
+      try enqueue(
+        messageID: messageID,
+        replyTo: replyTo,
+        trace: trace,
+        payload: payload,
+        state: state
+      )
+      advanceMessageID(after: messageID, state: &state)
+      return messageID
+    }
   }
 
   func sendRequest(
     trace: Oll_Protocol_TraceContext,
     payload: Oll_Protocol_PluginEnvelope.OneOf_Payload,
     pending: PendingResponses
-  ) async throws -> ResponseWaiter {
-    let messageID = try reserveMessageID()
-    let waiter = try pending.add(
-      messageID: messageID,
-      trace: trace
-    )
-    do {
-      let delivery = try enqueue(
-        messageID: messageID, replyTo: nil, trace: trace, payload: payload)
-      try await delivery.value()
-      return waiter
-    } catch {
-      pending.fail(messageID: messageID, error: error)
-      throw error
+  ) throws -> PendingRequest {
+    try state.withLock { state in
+      let messageID = try availableMessageID(state: state)
+      let request = try pending.add(messageID: messageID, trace: trace)
+      do {
+        try enqueue(
+          messageID: messageID,
+          replyTo: nil,
+          trace: trace,
+          payload: payload,
+          state: state
+        )
+        advanceMessageID(after: messageID, state: &state)
+        return request
+      } catch {
+        pending.discard(messageID: messageID, error: error)
+        throw error
+      }
     }
+  }
+
+  /// Whether this sender has admitted the named envelope to its ordered queue.
+  /// oll may directly reject fire-and-forget output even though it has no
+  /// success response slot.
+  func hasSent(messageID: UInt64) -> Bool {
+    guard messageID != 0 else { return false }
+    return state.withLock { state in
+      state.nextMessageID.map { messageID < $0 } ?? true
+    }
+  }
+
+  private func availableMessageID(state: State) throws -> UInt64 {
+    guard let messageID = state.nextMessageID else {
+      throw PluginSDKError.protocolViolation("plugin exhausted message IDs")
+    }
+    return messageID
+  }
+
+  private func advanceMessageID(after messageID: UInt64, state: inout State) {
+    state.nextMessageID = messageID == .max ? nil : messageID + 1
   }
 
   private func enqueue(
     messageID: UInt64,
     replyTo: UInt64?,
     trace: Oll_Protocol_TraceContext,
-    payload: Oll_Protocol_PluginEnvelope.OneOf_Payload
-  ) throws -> DeliveryWaiter {
+    payload: Oll_Protocol_PluginEnvelope.OneOf_Payload,
+    state: State
+  ) throws {
+    guard let sessionID = state.sessionID, let instanceID = state.instanceID else {
+      throw PluginSDKError.protocolViolation("plugin sender has no session identity")
+    }
     var envelope = Oll_Protocol_PluginEnvelope()
     envelope.messageID = messageID
     if let replyTo { envelope.replyTo = replyTo }
@@ -144,7 +148,7 @@ actor EnvelopeSender {
     envelope.pluginInstanceID = instanceID
     envelope.trace = trace
     envelope.payload = payload
-    return try queue.send(envelope)
+    try queue.send(envelope)
   }
 }
 
@@ -160,17 +164,24 @@ struct PluginEndpoint: Sendable {
       components.path.isEmpty,
       components.query == nil,
       components.fragment == nil,
-      let host = components.host,
+      let parsedHost = components.host,
       let port = components.port,
-      (1...65535).contains(port),
-      isLoopbackLiteral(host)
+      (1...65_535).contains(port),
+      isLoopbackLiteral(normalizedURLHost(parsedHost))
     else {
       throw PluginSDKError.environment(
         "OLL_PLUGIN_ENDPOINT must be an explicit plaintext loopback HTTP endpoint"
       )
     }
-    return Self(host: host, port: port)
+    return Self(host: normalizedURLHost(parsedHost), port: port)
   }
+}
+
+/// Foundation returns bracketed IPv6 hosts on Linux and unbracketed hosts on
+/// Darwin. Normalize that platform difference before enforcing loopback.
+private func normalizedURLHost(_ host: String) -> String {
+  guard host.first == "[", host.last == "]" else { return host }
+  return String(host.dropFirst().dropLast())
 }
 
 private func isLoopbackLiteral(_ host: String) -> Bool {
