@@ -4,7 +4,26 @@ import OnelastleafPluginProtocol
 
 extension ActionContext {
   /// Transfers an artifact from an asynchronous chunk source without retaining
-  /// the complete payload in memory. Empty artifacts use a zero chunk count.
+  /// the complete payload in memory.
+  ///
+  /// The descriptor must contain a canonical UUID v4 artifact ID, a safe base file
+  /// name, a nonempty media type, the exact byte count, and the 32-byte SHA-256
+  /// digest of the complete payload. Each yielded chunk must be nonempty and fit
+  /// within ``ActionContext/maximumArtifactChunkBytes``. Empty artifacts use a zero
+  /// chunk count and an empty sequence.
+  ///
+  /// The SDK verifies the count, total size, and digest while streaming. It records
+  /// the descriptor only after oll acknowledges storage; include that exact
+  /// descriptor in the returned ``ActionResult/artifacts`` array.
+  ///
+  /// - Parameters:
+  ///   - descriptor: Metadata and integrity information for the complete artifact.
+  ///   - chunkCount: The exact number of elements the sequence will yield.
+  ///   - chunks: A sendable asynchronous sequence of artifact data.
+  /// - Returns: oll's confirmation that the artifact was stored.
+  /// - Throws: `CancellationError` when the job is cancelled or already settled.
+  ///   Invalid metadata or bytes, host rejection, transport failure, and protocol
+  ///   violations use ``PluginSDKError``. Errors from `chunks` are propagated.
   public func storeArtifact<Chunks>(
     descriptor: Oll_Protocol_ArtifactDescriptor,
     chunkCount: UInt32,
@@ -20,7 +39,20 @@ extension ActionContext {
     }
   }
 
-  /// Convenience overload for payloads already split into in-memory chunks.
+  /// Transfers an artifact from chunks already held in memory.
+  ///
+  /// This overload validates every chunk before asking oll to allocate a staging
+  /// transfer. For large or incrementally produced payloads, use
+  /// ``storeArtifact(descriptor:chunkCount:chunks:)`` instead.
+  ///
+  /// - Parameters:
+  ///   - descriptor: Metadata and integrity information for the complete artifact.
+  ///   - chunks: The complete ordered chunk collection. Every nonempty artifact
+  ///     needs at least one nonempty chunk; an empty artifact uses an empty array.
+  /// - Returns: oll's confirmation that the artifact was stored.
+  /// - Throws: `CancellationError` when the job is cancelled or already settled.
+  ///   Invalid metadata or bytes, too many chunks, host rejection, transport
+  ///   failure, and protocol violations use ``PluginSDKError``.
   public func storeArtifact(
     descriptor: Oll_Protocol_ArtifactDescriptor,
     chunks: [Data]

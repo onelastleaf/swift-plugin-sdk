@@ -17,7 +17,7 @@ jobs:
   test:
     name: Swift ${{ matrix.swift }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -26,7 +26,7 @@ jobs:
           - macos-15
         swift:
           - "6.2.0"
-          - "6.2.1"
+          - "6.3.3"
 
     steps:
       - name: Check out repository
@@ -41,7 +41,7 @@ jobs:
         run: swift --version
 
       - name: Lint formatting
-        run: swift format lint --strict --recursive Package.swift Sources Tests
+        run: swift format lint --strict --recursive Package.swift Scripts Sources Tests
 
       - name: Run tests with warnings as errors
         run: >-
@@ -53,3 +53,28 @@ jobs:
           swift build --configuration release
           --disable-automatic-resolution
           -Xswiftc -warnings-as-errors
+
+      - name: Validate DocC documentation
+        if: matrix.os == 'macos-15' && matrix.swift == '6.3.3'
+        shell: bash
+        run: |
+          swift package dump-symbol-graph \
+            --minimum-access-level public \
+            --skip-synthesized-members
+          symbol_graph_dir="$(find .build -type d -name symbolgraph -print -quit)"
+          symbol_graph="$symbol_graph_dir/OnelastleafPluginSDK.symbols.json"
+          test -f "$symbol_graph"
+          swift Scripts/check-public-api-docs.swift "$symbol_graph"
+          docc_symbols=".build/docc-symbols"
+          mkdir -p "$docc_symbols"
+          cp "$symbol_graph" "$docc_symbols/"
+          xcrun docc convert \
+            Sources/OnelastleafPluginSDK/OnelastleafPluginSDK.docc \
+            --additional-symbol-graph-dir "$docc_symbols" \
+            --fallback-display-name OnelastleafPluginSDK \
+            --fallback-bundle-identifier org.onelastleaf.swift-plugin-sdk \
+            --fallback-default-module-kind Library \
+            --output-path .build/docc \
+            --warnings-as-errors \
+            --experimental-documentation-coverage \
+            --coverage-summary-level detailed

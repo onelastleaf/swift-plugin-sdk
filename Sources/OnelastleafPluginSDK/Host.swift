@@ -118,7 +118,19 @@ extension Oll_Protocol_HostCallResponse.OneOf_Result {
 }
 
 extension ActionContext {
-  /// Invokes a host capability while preserving this job's routing context.
+  /// Invokes a low-level host capability for the current job.
+  ///
+  /// Prefer ``getConfig(_:)`` and ``invokeConfigFunction(_:arguments:)`` for their
+  /// corresponding operations. Use this method for document and CRDT capabilities
+  /// represented by `Oll_Protocol_HostCallRequest.OneOf_Call`.
+  ///
+  /// The SDK validates the request, preserves the job's trace and call depth, and
+  /// checks that the response kind matches the request kind.
+  ///
+  /// - Parameter call: The protocol request variant to send to oll.
+  /// - Returns: The matching host response envelope.
+  /// - Throws: `CancellationError` when the job is cancelled. Other validation,
+  ///   host, call-depth, transport, and protocol failures use ``PluginSDKError``.
   public func hostCall(
     _ call: Oll_Protocol_HostCallRequest.OneOf_Call
   ) async throws -> Oll_Protocol_HostCallResponse {
@@ -129,6 +141,16 @@ extension ActionContext {
   }
 
   /// Reads the plugin's current host-owned configuration.
+  ///
+  /// Configuration is authoritative in oll and is read when this method is called;
+  /// the SDK does not cache it in a file. An empty path reads the root value. List
+  /// indexes in a path are zero-based.
+  ///
+  /// - Parameter path: A path relative to the current plugin configuration root.
+  /// - Returns: The configuration response for that path.
+  /// - Throws: `CancellationError` when the job is cancelled. An invalid path,
+  ///   rejected request, transport failure, or invalid response uses
+  ///   ``PluginSDKError``.
   public func getConfig(
     _ path: Oll_Protocol_ConfigPath = Oll_Protocol_ConfigPath()
   ) async throws -> Oll_Protocol_GetConfigResponse {
@@ -147,6 +169,19 @@ extension ActionContext {
   }
 
   /// Invokes a configuration closure owned by the active oll session.
+  ///
+  /// A function reference is an in-memory handle into oll's configuration runtime.
+  /// It is valid only for the session that returned it and must not be persisted or
+  /// reused after reconnection.
+  ///
+  /// - Parameters:
+  ///   - function: A function reference obtained from configuration in this session.
+  ///   - arguments: Structured arguments. Function handles among them must also
+  ///     belong to the same active session.
+  /// - Returns: The ordered structured values returned by the configuration function.
+  /// - Throws: `CancellationError` when the job is cancelled. A stale or malformed
+  ///   reference, invalid argument, host error, transport failure, or protocol
+  ///   violation uses ``PluginSDKError``.
   public func invokeConfigFunction(
     _ function: Oll_Protocol_ConfigFunctionRef,
     arguments: [Oll_Protocol_ConfigValue] = []
@@ -170,6 +205,17 @@ extension ActionContext {
   }
 
   /// Emits a structured log record associated with this job.
+  ///
+  /// The SDK supplies the timestamp and job trace. Field values must be serializable
+  /// and cannot contain session-scoped configuration function references.
+  ///
+  /// - Parameters:
+  ///   - level: A known severity other than `unspecified`.
+  ///   - target: A nonempty subsystem or component name used to group records.
+  ///   - message: The human-readable log message.
+  ///   - fields: Optional structured context such as counts, identifiers, or paths.
+  /// - Throws: `CancellationError` when the job is cancelled or already settled.
+  ///   Invalid fields, levels, or targets use ``PluginSDKError``.
   public func log(
     level: Oll_Protocol_LogLevel,
     target: String,

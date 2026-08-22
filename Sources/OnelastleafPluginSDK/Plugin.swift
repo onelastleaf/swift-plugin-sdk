@@ -4,7 +4,16 @@ import GRPCNIOTransportHTTP2Posix
 import OnelastleafPluginProtocol
 import Synchronization
 
-/// A trusted onelastleaf plugin process.
+/// A trusted onelastleaf plugin process that connects to an oll-owned runtime.
+///
+/// Create one `Plugin`, register every action with ``action(name:description:handler:)``,
+/// and then call ``run()`` from the executable entry point. A plugin instance is
+/// single-use: registration closes when `run()` starts, and the same instance cannot
+/// be run again.
+///
+/// `Plugin` connects as a gRPC client. It does not listen for incoming connections.
+/// oll supplies the loopback endpoint in `OLL_PLUGIN_ENDPOINT` and reserves the
+/// process's standard input as a parent-liveness pipe.
 public final class Plugin: Sendable {
   private enum Phase: Sendable {
     case configuring
@@ -21,6 +30,19 @@ public final class Plugin: Sendable {
   private let version: String
   private let state = Mutex(State())
 
+  /// Creates a plugin with the identity oll expects during the handshake.
+  ///
+  /// Keep `id` identical to `plugin.id` in the publisher's `oll.toml`. The ID is a
+  /// stable machine identity, not the mutable display name shown to users.
+  ///
+  /// - Parameters:
+  ///   - id: A lower-case dotted DNS name such as `com.example.my-plugin`. It must
+  ///     contain at least two labels and occupy no more than 191 UTF-8 bytes. Each
+  ///     label begins and ends with a letter or digit and may contain internal
+  ///     hyphens.
+  ///   - version: A nonempty informational build or release string. The host reports
+  ///     it for diagnostics but does not use it to select or update the package.
+  /// - Throws: ``PluginSDKError/invalidArgument(_:)`` when either value is invalid.
   public init(id: String, version: String) throws {
     try validatePluginID(id)
     guard !version.isEmpty else {
@@ -30,7 +52,22 @@ public final class Plugin: Sendable {
     self.version = version
   }
 
-  /// Registers an action before `run()` starts. Names are unique per plugin.
+  /// Registers an action that oll can invoke as a job.
+  ///
+  /// Register all actions before calling ``run()``. The handler may execute at the
+  /// same time as handlers for other jobs, so captured mutable state must be safe to
+  /// use concurrently. The ordered `arguments` array preserves duplicates, empty
+  /// strings, and values beginning with `-`.
+  ///
+  /// - Parameters:
+  ///   - name: The nonempty action name exposed through oll. Names must be unique
+  ///     within this plugin instance.
+  ///   - description: A human-facing summary of what the action does.
+  ///   - handler: The asynchronous operation for one job. Return an ``ActionResult``
+  ///     to succeed or throw an error to fail that job.
+  /// - Returns: This plugin, so registrations can be chained.
+  /// - Throws: ``PluginSDKError/invalidArgument(_:)`` when the name is empty or
+  ///   duplicated, or when registration has already closed.
   @discardableResult
   public func action(
     name: String,
@@ -56,8 +93,19 @@ public final class Plugin: Sendable {
     return self
   }
 
-  /// Connects to the oll-owned runtime and stays active until graceful
-  /// shutdown, parent stdin EOF, caller cancellation, or a session failure.
+  /// Connects to the oll-owned runtime and serves registered actions.
+  ///
+  /// This call normally lasts for the remaining lifetime of the plugin process. It
+  /// returns after a graceful shutdown, parent stdin EOF, or connection closure. It
+  /// throws when setup, transport, or protocol processing fails, and propagates
+  /// caller cancellation as `CancellationError`.
+  ///
+  /// Call this method exactly once and do not read standard input elsewhere in the
+  /// process. oll owns standard input as the parent-liveness pipe, and EOF requires
+  /// the plugin to exit.
+  ///
+  /// - Throws: ``PluginSDKError`` for SDK failures, or `CancellationError` when the
+  ///   task running the plugin is cancelled.
   public func run() async throws {
     let actions = try beginRun()
     defer { state.withLock { $0.phase = .finished } }

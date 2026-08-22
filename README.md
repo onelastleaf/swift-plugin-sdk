@@ -22,12 +22,13 @@ resolve and build the complete dependency graph.
 
 ## Build and test the SDK
 
-Clone the official release, then use the usual SwiftPM commands:
+Clone the official repository, check out the published `v0.1.0` tag in detached
+HEAD state, then use the usual SwiftPM commands:
 
 ```sh
-git clone --branch 0.1.0 --depth 1 \
-  https://github.com/onelastleaf/swift-plugin-sdk.git
+git clone https://github.com/onelastleaf/swift-plugin-sdk.git
 cd swift-plugin-sdk
+git switch --detach refs/tags/v0.1.0
 swift build
 swift test
 ```
@@ -260,6 +261,18 @@ The plugin protocol has no encoded-envelope size cap. This SDK sets
 grpc-swift's send and receive limits to `Int.max`, avoiding its smaller default.
 Artifacts still use oll's advertised chunk limit and should go through
 `storeArtifact` rather than being packed into one large envelope.
+
+## API documentation
+
+The [versioned API documentation](https://swiftpackageindex.com/onelastleaf/swift-plugin-sdk/documentation)
+is built and hosted by the Swift Package Index. Start with the getting-started
+guide there, then use the symbol pages for lifecycle, cancellation, host calls,
+and artifact details.
+
+The repository contains a native DocC catalog and tells the Swift Package Index
+to build the `OnelastleafPluginSDK` target through `.spi.yml`. The package does
+not add `swift-docc-plugin` as a dependency; the index's build system supplies
+the documentation tooling.
 
 ## Troubleshooting
 
