@@ -29,3 +29,16 @@ private let repositoryRoot = URL(fileURLWithPath: #filePath)
   #expect(manifest.contains("documentation_targets: [OnelastleafPluginSDK]"))
   #expect(!package.contains("swift-docc-plugin"))
 }
+
+@Test func continuousIntegrationUsesANode24SwiftSetupActionAndSupportedVersion() throws {
+  let workflow = try String(
+    contentsOf: repositoryRoot.appending(path: ".github/workflows/ci.yml"),
+    encoding: .utf8
+  )
+
+  #expect(workflow.contains("SwiftyLab/setup-swift@v1.14.0"))
+  #expect(workflow.contains("- \"6.2.0\""))
+  #expect(workflow.contains("- \"6.2.1\""))
+  #expect(!workflow.contains("swift-actions/setup-swift"))
+  #expect(!workflow.contains("6.3.3"))
+}

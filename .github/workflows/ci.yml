@@ -26,14 +26,14 @@ jobs:
           - macos-15
         swift:
           - "6.2.0"
-          - "6.3.3"
+          - "6.2.1"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Install Swift
-        uses: swift-actions/setup-swift@v2.4.0
+        uses: SwiftyLab/setup-swift@v1.14.0
         with:
           swift-version: ${{ matrix.swift }}
 
@@ -55,7 +55,7 @@ jobs:
           -Xswiftc -warnings-as-errors
 
       - name: Validate DocC documentation
-        if: matrix.os == 'macos-15' && matrix.swift == '6.3.3'
+        if: matrix.os == 'macos-15' && matrix.swift == '6.2.1'
         shell: bash
         run: |
           swift package dump-symbol-graph \
