@@ -270,3 +270,9 @@ environment and stdin liveness pipe are created correctly.
 If installation cannot find the built executable, make sure the executable
 product name in `Package.swift`, the release binary path in `source.steps`, and
 the filename in `runtime.argv` are all the same.
+
+## License
+
+`swift-plugin-sdk` is licensed under the GNU General Public License, version 3
+or (at your option) any later version (`GPL-3.0-or-later`). See [LICENSE](LICENSE)
+for the complete terms.
